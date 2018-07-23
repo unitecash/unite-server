@@ -1,13 +1,13 @@
 {
-  "name": "uapi",
+  "name": "unite-server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Unite.cash Content Publication Endpoint",
+  "main": "app.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node app.js"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "The Unite.cash Developers",
+  "license": "AGPL-3.0",
   "dependencies": {
     "express": "^4.16.3",
     "multiparty": "^4.1.4"
