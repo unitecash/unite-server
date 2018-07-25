@@ -1,7 +1,11 @@
-const express = require('express')
-const multiparty = require('multiparty')
-const { spawn } = require('child_process')
-const stream = require('stream')
+#!/usr/bin/env nodemon
+
+const express      = require('express')
+const multiparty   = require('multiparty')
+const spawn        = require('child_process')
+const stream       = require('stream')
+const IPFS         = require('ipfs')
+const bch          = require('bitcoincashjs')
 
 // configuration options
 const PORT = 5501
@@ -10,6 +14,7 @@ const MAX_FILE_UPLOAD_SIZE = 550000000
 const app = express()
 
 app.get('/', (req, res) => {
+  console.log('Request to /')
   res.send('Unite.cash API Endpoint')
 })
 
