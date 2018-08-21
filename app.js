@@ -1,73 +1,195 @@
-#!/usr/bin/env nodemon
+#!/usr/bin/env node
 
+const fs           = require('fs')
 const express      = require('express')
 const multiparty   = require('multiparty')
-const spawn        = require('child_process')
 const stream       = require('stream')
 const IPFS         = require('ipfs')
 const bch          = require('bitcoincashjs')
 
-// configuration options
+// configuration options [TODO] config.js
 const PORT = 5501
-const MAX_FILE_UPLOAD_SIZE = 550000000
+const MAX_FILE_UPLOAD_SIZE = 500 * 1024 * 1024 // 500 MB
+const MAX_HASH_DESCRIPTOR_SIZE = 4096 // 4 KB
+const API_VERSION = 0.1
+const DEBUG = true
 
 const app = express()
 
+const log = (data) => {
+  if (DEBUG) { console.log(data) }
+}
+
+const IPFSOptions = {
+  relay: {
+    enabled: true,
+    hop: {
+      enabled: true,
+      active: true
+    }
+  },
+  EXPERIMENTAL: {
+    pubsub: true,
+    sharding: true,
+    dht: true
+  },
+  config: {
+    Addresses: {
+      swarm: [
+        'ip4/0.0.0.0/tcp/4001',
+        'ip4/0.0.0.0/tcp/4002',
+        'ip4/0.0.0.0/tcp/4003/ws'
+      ]
+    }
+  }
+}
+
+// start IPFS and then start listening for content
+const IPFSNode = new IPFS(IPFSOptions)
+IPFSNode.on('ready', async () => {
+  const IPFSVersion = await IPFSNode.version()
+  await app.listen(PORT)
+
+  console.log('Unite server has started and is ready for connections:')
+  console.log('Listening on port: ', PORT)
+  console.log('IPFS version:      ', IPFSVersion.version)
+  console.log('Debug mode:        ', DEBUG)
+})
+
 app.get('/', (req, res) => {
-  console.log('Request to /')
+  log('[GET] /')
   res.send('Unite.cash API Endpoint')
 })
 
-app.post('/publish', (req, res) => {
-  console.log('A POST request was received to publish content')
-  var form = new multiparty.Form()
-  form.parse(req, (err, fields, files) => {
-    console.log('Parsed form data with multiparty')
-    // pull out some variables
-    var rawtx = fields.rawtx[0]
-    var hashDescriptor = JSON.parse(fields.hashDescriptor[0])
+app.get('/publish', (req, res) => {
+  log('[GET] /publish')
+  res.send('You must use POST to publish content.')
+})
 
-    var child = spawn('ipfs', ['add'])
-
-    child.stdout.on('data', (data) => {
-      var hashDescriptorHash = data.toString().split(' ')[1]
-      console.log(
-        'Added the hash descriptor\'s hash to IPFS:',
-        hashDescriptorHash
-      )
-
-      console.log('Pinning the hash...')
-      child = spawn('ipfs', ['pin', 'add', hashDescriptorHash])
-      child.stdout.on('data', (data) => {
-        console.log(data.toString())
-
-        // add the file itself
-        child = spawn('ipfs', ['add', files.files[0].path])
-        child.stdout.on('data', (data) => {
-          var fileHash = data.toString().split(' ')[1]
-          console.log(
-            'Added',
-            fileHash,
-            'to IPFS!'
-          )
-        })
-
-      })
-
-    })
-
-    console.log('Pushing HD data to IPFS via stdin')
-    var stdinStream = new stream.Readable()
-    stdinStream.push(fields.hashDescriptor[0])  // Add data to the internal queue for users of the stream to consume
-    stdinStream.push(null)   // Signals the end of the stream (EOF)
-    stdinStream.pipe(child.stdin)
-
-    console.log('Sendins message with status code 200')
-    res.status(200)
-    res.send('success')
+app.get('/pins', (req, res) => {
+  log('[GET] /pins')
+  IPFSNode.pin.ls((err, pinset) => {
+    if (err) { throw err }
+    res.send(pinset)
   })
 })
 
-app.listen(PORT, () => {
-  console.log('Unite API exposed on port ', PORT)
+app.get('/peers', (req, res) => {
+  log('[GET] /peers')
+  IPFSNode.swarm.peers((err, peers) => {
+    if (err) { throw err }
+    res.send(peers)
+  })
+})
+
+app.get('/info', (req, res) => {
+  log('[GET] /info')
+  // build an info object to send to the client
+  const info = {
+    version: VERSION,
+    maxFileSize: MAX_FILE_UPLOAD_SIZE
+  }
+  res.send(JSON.stringify(info))
+})
+
+app.post('/publish', (req, res) => {
+  log('[POST] /publish')
+  // Parse form data with multiparty
+  const form = new multiparty.Form()
+  form.parse(req, (err, fields, files) => {
+    const signedTransaction = fields.signedTransaction[0]
+    const hashDescriptor = fields.hashDescriptor[0]
+    const fileArray = files.files
+    
+    // verify hashDescriptor is an object, and that it is compressed
+    //hashDescriptor = JSON.stringify(JSON.parse(hashDescriptor))
+    
+    log('Hash descriptor size: ' + hashDescriptor.length)
+    log('Number of files:      ' + fileArray.length)
+    log('Signed transaction:\n' + signedTransaction)
+
+    // [TODO] verify the signature on the transaction
+    
+    // [TODO] verify the transaction is otherwise valid per the Unite spec
+    //        this includes referencing a valid parent TXID (if applicable),
+    //        high enough fees so that it will actually be mined, etc.
+
+    // calculate the IPFS hash of hashDescriptor
+    const hashDescriptorFile = [
+      {
+        path: 'file',
+        content: Buffer.from(hashDescriptor)
+      }
+    ]
+    IPFSNode.files.add(hashDescriptorFile, {onlyHash: true}, (err, fileHashes) => {
+      if (err) { throw err }
+      const hashDescriptorHash = fileHashes[0].hash
+      log('Calculated hashDescriptor\'s hash: ' + hashDescriptorHash)
+      
+      // [TODO] fileHashes[0].hash MUST be the same as is present in signedTransaction
+        
+      /*
+        calculate the IPFS hash of each file sent and verify the hash is contained
+        in hashDescriptor.
+        
+        Note that we don't verify that all files who's hashes were referenced in
+        hashDescriptor were provided to this endpoint. This allows for clients to
+        send only some of their files to some endpoints, further decentralizing
+        the protocol.
+      */
+      
+      // define an array to hold the file data to be added
+      var dataFiles = []
+      
+      // for each file uploaded, add an object to dataFiles
+      for (var i = 0; i < fileArray.length; i++) {
+        dataFiles.push({
+          path: 'file',
+          content: Buffer.from(fs.readFileSync(fileArray[i].path))
+        })
+      }
+      
+      // calculate the hash of each file
+      IPFSNode.files.add(dataFiles, {onlyHash: true}, (err, fileHashes) => {
+      if (err) { throw err }
+        var failVerifyHashes = false
+        for (var i = 0; i < fileHashes.length; i++) {
+          // verify hash is contained somewhere in hashDescriptor
+          if (hashDescriptor.indexOf(fileHashes[i].hash) < 0) { failVerifyHashes = true; break; }
+        }
+        
+        if (failVerifyHashes) {
+          // one or more files did not have a hash that was in hashDescriptor
+          res.status(400)
+          res.send('Make sure the file hashes are in the signed hash descriptor!')
+        } else {
+        
+          log('Verified the following hashes are in hashDescriptor:')
+          for (var i = 0; i < fileHashes.length; i++) {
+            log('Hash: ' + fileHashes[i].hash)
+          }
+          
+          // add hash descriptor to IPFS
+          IPFSNode.files.add(hashDescriptorFile, (err, fileHashes) => {
+            if (err) { throw err }
+            log('Added hash descriptor to IPFS!')
+          
+            // Add all files to IPFS
+            IPFSNode.files.add(dataFiles, (err, fileHashes) => {
+              if (err) { throw err }
+              // [TODO] help the publisher by broadcasting their transaction
+              res.send('Success!')
+              log('Added files to IPFS!')
+              
+              // Pin the hashes on this node
+              for (var i = 0; i < fileHashes.length; i++) {
+                IPFSNode.pin.add(fileHashes[i].hash, (err) => {log(err)})
+              }
+              IPFSNode.pin.add(hashDescriptorHash, (err) => {log(err)})
+            })
+          })
+        }
+      })
+    })
+  })
 })
