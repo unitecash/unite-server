@@ -1,20 +1,35 @@
 #!/usr/bin/env node
 
 const fs           = require('fs')
+const https        = require('https')
 const express      = require('express')
 const multiparty   = require('multiparty')
 const stream       = require('stream')
 const IPFS         = require('ipfs')
 const bch          = require('bitcoincashjs')
 
-// configuration options [TODO] config.js
-const PORT = 5501
-const MAX_FILE_UPLOAD_SIZE = 500 * 1024 * 1024 // 500 MB
-const MAX_HASH_DESCRIPTOR_SIZE = 4096 // 4 KB
-const API_VERSION = 0.1
-const DEBUG = true
+// configuration options
+const PORT                       = 5501
+const ENABLE_SSL                 = true
+const SSL_CERT_FILE              = '../cert.pem'
+const SSL_KEY_FILE               = '../privkey.pem'
+const ALLOW_CROSS_ORIGIN_LOADING = true
+
+const MAX_FILE_UPLOAD_SIZE       = 500 * 1024 * 1024 // 500 MB
+const MAX_HASH_DESCRIPTOR_SIZE   = 4096 // 4 KB
+const API_VERSION                = 0.1
+const DEBUG                      = true
 
 const app = express()
+
+// Get rid of CORS errors
+if ( ALLOW_CROSS_ORIGIN_LOADING ) {
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*')
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept')
+    next()
+  })
+}
 
 const log = (data) => {
   if (DEBUG) { console.log(data) }
@@ -46,14 +61,24 @@ const IPFSOptions = {
 
 // start IPFS and then start listening for content
 const IPFSNode = new IPFS(IPFSOptions)
-IPFSNode.on('ready', async () => {
-  const IPFSVersion = await IPFSNode.version()
-  await app.listen(PORT)
-
+IPFSNode.on('ready', () => {
+  
+  if ( ENABLE_SSL ) {
+    var key = fs.readFileSync(SSL_KEY_FILE)
+    var cert = fs.readFileSync(SSL_CERT_FILE)
+    https.createServer({
+      key: key,
+      cert: cert
+    }, app).listen(PORT)
+  } else {
+    app.listen(PORT)
+  }
+  
   console.log('Unite server has started and is ready for connections:')
-  console.log('Listening on port: ', PORT)
-  console.log('IPFS version:      ', IPFSVersion.version)
-  console.log('Debug mode:        ', DEBUG)
+  console.log('Listening on Port: ', PORT)
+  console.log('Debug Mode:        ', DEBUG)
+  console.log('SSL Enabled:       ', ENABLE_SSL)
+  console.log('Allow CORS:        ', ALLOW_CROSS_ORIGIN_LOADING)
 })
 
 app.get('/', (req, res) => {
@@ -86,7 +111,7 @@ app.get('/info', (req, res) => {
   log('[GET] /info')
   // build an info object to send to the client
   const info = {
-    version: VERSION,
+    version: API_VERSION,
     maxFileSize: MAX_FILE_UPLOAD_SIZE
   }
   res.send(JSON.stringify(info))
